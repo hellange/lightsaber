@@ -1,0 +1,431 @@
+[1mdiff --git a/teensy_sketch/light_saber_audio/light_saber_audio.ino b/teensy_sketch/light_saber_audio/light_saber_audio.ino[m
+[1mindex 4e83a2a..30334bc 100644[m
+[1m--- a/teensy_sketch/light_saber_audio/light_saber_audio.ino[m
+[1m+++ b/teensy_sketch/light_saber_audio/light_saber_audio.ino[m
+[36m@@ -1,80 +1,371 @@[m
+[32m+[m[32m/* Presented without warranty, guarantee and support.[m[41m  [m
+[32m+[m[32m *  By Bob Clagett - I Like To Make Stuff[m
+[32m+[m[32m *[m[41m  [m
+[32m+[m[32m * This is the code to accompany the lightsaber project at http://www.iliketomakestuff.com/make-lightsaber/[m
+[32m+[m[32m * Expected hardware is listed in post (Teensy 3.2, Prop Shield, DotStar LEDs)[m
+[32m+[m[32m *[m[41m [m
+[32m+[m[32m * This is functional v1 of this code.  Lots more I want to add to it including crash detection/sounds.[m
+[32m+[m[32m * This code is dirty, bulky, poorly documented and ugly but I finally got it all functional.[m[41m  [m
+[32m+[m[32m * Cleanup to come later in v2.[m
+[32m+[m[32m*/[m
+[32m+[m
+[32m+[m
+ #include <Audio.h>[m
+ #include <Wire.h>[m
+ #include <SPI.h>[m
+ #include <SD.h>[m
+ #include <SerialFlash.h>[m
+[31m-[m
+ // GUItool: begin automatically generated code[m
+[31m-AudioInputAnalog         adc1;           //xy=255,182[m
+[31m-AudioFilterBiquad        biquad1;        //xy=394,182[m
+[31m-AudioPlaySerialflashRaw  playFlashRaw1;  //xy=535,319[m
+[31m-AudioFilterStateVariable filter1;        //xy=558,189[m
+[31m-AudioAnalyzePeak         peak1;          //xy=559,255[m
+[31m-AudioMixer4              mixer1;         //xy=710,196[m
+[31m-AudioOutputAnalog        dac1;           //xy=844,196[m
+[31m-AudioConnection          patchCord1(adc1, biquad1);[m
+[31m-AudioConnection          patchCord2(biquad1, 0, filter1, 0);[m
+[31m-AudioConnection          patchCord3(biquad1, peak1);[m
+[31m-AudioConnection          patchCord4(playFlashRaw1, 0, mixer1, 2);[m
+[31m-AudioConnection          patchCord5(filter1, 0, mixer1, 0);[m
+[31m-AudioConnection          patchCord6(filter1, 2, mixer1, 1);[m
+[31m-AudioConnection          patchCord7(mixer1, dac1);[m
+[32m+[m[32mAudioPlaySerialflashRaw  playFlashRaw1;  //xy=149,388[m
+[32m+[m[32mAudioPlaySerialflashRaw  playHUMraw;  //xy=149,388[m
+[32m+[m[32mAudioPlaySerialflashRaw  playSwingRaw;  //xy=149,388[m
+[32m+[m[32mAudioMixer4              mixer1;         //xy=445,386[m
+[32m+[m[32mAudioOutputAnalog        dac1;           //xy=591,379[m
+[32m+[m[32mAudioConnection          patchCord4(playSwingRaw, 0, mixer1, 2);[m
+[32m+[m[32mAudioConnection          patchCord1(playFlashRaw1, 0, mixer1, 1);[m
+[32m+[m[32mAudioConnection          patchCord3(playHUMraw, 0, mixer1, 0);[m
+[32m+[m[32mAudioConnection          patchCord2(mixer1, dac1);[m
+ // GUItool: end automatically generated code[m
+ [m
+[32m+[m[32m#include <Adafruit_DotStar.h>[m
+[32m+[m[32m#include <NXPMotionSense.h>[m
+ [m
+[32m+[m[32mNXPMotionSense imu;[m
+[32m+[m[32mNXPSensorFusion filter;[m
+ [m
+[31m-// Pins[m
+[31m-const int FLASH_CS = 6;               // Serial flash chip select[m
+[31m-const int AMP_ENABLE = 5;             // Amplifier enable pin[m
+[32m+[m[32mint motionThreshold = 2;[m
+ [m
+[32m+[m[32mfloat lastPitch = 0, lastRoll = 0, lastHeading = 0;[m
+ [m
+[32m+[m[32mint buttonState = HIGH;[m
+[32m+[m[32mint bladeState = 0; //0 off, 1, fading up, 2 on, 3 fading down[m
+[32m+[m[32mint fadeStep = 0;[m
+[32m+[m[32mint fadeStepSize = 6;[m
+[32m+[m[32mint selectedColor = 0;[m
+[32m+[m[32mint lastSelectedColor = 0;[m
+[32m+[m[32mbool isAnimating = 0;[m
+[32m+[m[32mbool bladeOn = 0;[m
+[32m+[m[32mlong lastDebounceTime = 0;  // the last time the output pin was toggled[m
+[32m+[m[32mlong debounceDelay = 50;[m[41m            [m
+[32m+[m[32mint lastButtonState = HIGH;[m
+[32m+[m[32mint pendingPress = 0;[m
+ [m
+[32m+[m[32m//BC = Blade Color[m
+[32m+[m[32mint BCbuttonState = HIGH;[m
+[32m+[m[32mlong BClastDebounceTime = 0;  // the last time the output pin was toggled[m
+[32m+[m[32mlong BCdebounceDelay = 50;[m[41m            [m
+[32m+[m[32mint BClastButtonState = HIGH;[m
+[32m+[m[32mint BCpendingPress = 0;[m
+[32m+[m[32mint pendingColorPress = 0;[m
+[32m+[m
+[32m+[m[32m#define COLOR_BUTTON_PIN 1[m
+[32m+[m[32m#define POWER_BUTTON_PIN 0[m
+[32m+[m[32m#define COLOR_ORDER BGR[m
+[32m+[m[32m#define CHIPSET     APA102[m
+[32m+[m[32m#define NUMPIXELS    252[m
+[32m+[m
+[32m+[m[32m#define BRIGHTNESS  100[m
+[32m+[m[32m#define FRAMES_PER_SECOND 70[m
+[32m+[m
+[32m+[m[32m#define PROP_AMP_ENABLE 5[m
+[32m+[m[32m#define FLASH_CHIP_SELECT 6[m
+[32m+[m[32m#define LED_BUFFER_SELECT 7[m
+[32m+[m
+[32m+[m[32m#define VOLUME_POT 15[m
+[32m+[m
+[32m+[m[32m#define LED_PIN    7[m
+[32m+[m[32mAdafruit_DotStar strip = Adafruit_DotStar([m
+[32m+[m[32m  NUMPIXELS, DOTSTAR_BRG);[m
+[32m+[m[41m  [m
+[32m+[m[32mint outputValue = 0;[m
+[32m+[m[32mint presetColors[] = {0x0000FF,0x00FF00,0xFF0000,0xFFFFFF};[m
+[32m+[m[32mint totalPresetColors = (sizeof(presetColors)/sizeof(int));[m
+[32m+[m[32mint selectedColorIndex = 0;[m
+[32m+[m
+[32m+[m[32mint swingSounds = 4;[m
+[32m+[m[32mint lastSwingSound = swingSounds;[m
+[32m+[m
+[32m+[m[32mint clashSounds = 0;[m
+ void setup() {[m
+[32m+[m[32m  delay(500); // sanity delay[m
+[32m+[m[32m  imu.begin();[m
+[32m+[m[32m  filter.begin(100);[m
+[32m+[m[32m  #if defined(__AVR_ATtiny85__) && (F_CPU == 16000000L)[m
+[32m+[m[32m  clock_prescale_set(clock_div_1); // Enable 16 MHz on Trinket[m
+[32m+[m[32m#endif[m
+[32m+[m
+[32m+[m[32m  strip.begin(); // Initialize pins for output[m
+[32m+[m[32m  strip.show();  // Turn all LEDs off ASAP[m
+[32m+[m
+[32m+[m[32m  pinMode(POWER_BUTTON_PIN, INPUT);[m
+[32m+[m[32m  pinMode(COLOR_BUTTON_PIN, INPUT);[m
+[32m+[m[32m  pinMode(LED_PIN, OUTPUT);[m
+[32m+[m[32m  digitalWrite(POWER_BUTTON_PIN, HIGH);[m
+[32m+[m[32m  digitalWrite(COLOR_BUTTON_PIN, HIGH);[m
+[32m+[m[32m  digitalWrite(LED_PIN, LOW);[m
+ [m
+   Serial.begin(9600);[m
+[32m+[m[32m // wait up to 3 seconds for the Serial device to become available[m
+[32m+[m[32m  long unsigned debug_start = millis ();[m
+[32m+[m[32m  while (!Serial && ((millis () - debug_start) <= 3000))[m
+[32m+[m[32m    ;[m
+ [m
+[31m-  // Initialize amplifier[m
+[31m-  AudioMemory(20);[m
+[31m-  //dac1.analogReference(EXTERNAL); // much louder![m
+[31m-  delay(50);                      // time for DAC voltage stable[m
+[31m-  pinMode(AMP_ENABLE, OUTPUT);[m
+[32m+[m[32m  Serial.println ("Start prop shield RAW player");[m
+[32m+[m[32mSPI.begin();[m
+[32m+[m[32m  // Enable the amplifier on the prop shield[m
+[32m+[m[32m  pinMode(PROP_AMP_ENABLE, OUTPUT);[m
+[32m+[m[32m  digitalWrite(PROP_AMP_ENABLE, HIGH);[m
+[32m+[m[32m  pinMode(LED_BUFFER_SELECT, OUTPUT);[m
+[32m+[m[32m  digitalWrite(LED_BUFFER_SELECT, HIGH);[m
+ [m
+[31m-  // Initialize serial flash[m
+[31m-  if ( !SerialFlash.begin(FLASH_CS) ) {[m
+[31m-    Serial.println( "Unable to access SPI Flash chip" );[m
+[32m+[m[32m  // Audio connections require memory to work.  For more[m
+[32m+[m[32m  // detailed information, see the MemoryAndCpuUsage example[m
+[32m+[m[32m  AudioMemory(8);[m
+[32m+[m
+[32m+[m[32m  // Set initial volume[m
+[32m+[m[32m   mixer1.gain(1, 1.5f); //other sounds[m
+[32m+[m[32m   mixer1.gain(0, 0.8f); //hum[m
+[32m+[m
+[32m+[m[32m  // Start SerialFlash[m
+[32m+[m[32m  if (!SerialFlash.begin(FLASH_CHIP_SELECT)) {[m
+[32m+[m[32m    while (1)[m
+[32m+[m[32m      {[m
+[32m+[m[32m  Serial.println ("Cannot access SPI Flash chip");[m
+[32m+[m[32m  delay (3000);[m
+[32m+[m[32m      }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  //triggerSound("saberswing1.raw");[m
+[32m+[m[32m  triggerSound("lightsaber_03.raw");[m
+[32m+[m[32mpowerUpBlade();[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mvoid powerUpBlade(){[m
+[32m+[m[41m  [m
+[32m+[m[32m  isAnimating = 1;[m
+[32m+[m[32m  bladeState = 1;[m
+[32m+[m[32m  Serial.println("Turn on blade");[m
+[32m+[m[32m  bladeOn = 1;[m
+[32m+[m[32m  triggerSound("saberon.raw");[m
+[32m+[m[32m }[m
+[32m+[m[41m [m
+[32m+[m[32mvoid powerDownBlade(){[m
+[32m+[m[32m //animate DOWN[m[41m [m
+[32m+[m[32m triggerSound("saberoff.raw");[m
+[32m+[m[32m bladeState = 3;[m
+[32m+[m[32m fadeStep = NUMPIXELS;[m
+[32m+[m[32m isAnimating = 1;[m
+[32m+[m[32m Serial.println("Turn off blade");[m
+[32m+[m[32m stopHum();[m
+[32m+[m[32m bladeOn = 0;[m
+[32m+[m[32m}[m
+[32m+[m[41m  [m
+[32m+[m[32mvoid bladeIsOn(){[m
+[32m+[m[41m  [m
+[32m+[m[32m  if(!playHUMraw.isPlaying()){[m
+[32m+[m[32m      startHum();[m
+[32m+[m[32m  }[m
+[32m+[m[32m  //nothing needed here unless adding animation[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mvoid bladeIsAnimatingUp(){[m
+[32m+[m[32m  //Serial.println("bladeIsAnimatingUp");[m
+[32m+[m[32m  int midpoint = NUMPIXELS/2;[m
+[32m+[m[32m  int newSection = fadeStep+fadeStepSize;[m
+[32m+[m[32m  for( int j = fadeStep; j < newSection; j++) {[m
+[32m+[m[32m     strip.setPixelColor(j, selectedColor);[m
+[32m+[m[32m     strip.setPixelColor(NUMPIXELS-j, selectedColor);[m
+[32m+[m[32m  }[m
+[32m+[m[32m  Serial.println(newSection);[m
+[32m+[m[32m  fadeStep = newSection;[m
+[32m+[m[41m    [m
+[32m+[m[32m    if (fadeStep >= midpoint+fadeStepSize){[m
+[32m+[m[41m    [m
+[32m+[m[32m     fadeStep = NUMPIXELS;[m
+[32m+[m[32m      isAnimating=0;[m
+[32m+[m[32m      bladeState = 2;[m[41m [m
+[32m+[m[32m//      delay(200);[m
+[32m+[m[32m      Serial.println("blade up complete");[m
+[32m+[m[32m      startHum();[m
+[32m+[m[32m    }[m
+[32m+[m[32m    }[m
+[32m+[m[41m    [m
+[32m+[m[32mvoid bladeIsAnimatingDown(){[m
+[32m+[m[32m  //Serial.println("bladeIsAnimatingDown");[m
+[32m+[m[32m  int midpoint = NUMPIXELS/2;[m
+[32m+[m[32m  int newSection = fadeStep-fadeStepSize;[m
+[32m+[m[32m  for( int j = fadeStep; j > newSection; j--) {[m
+[32m+[m[41m    [m
+[32m+[m[32m     strip.setPixelColor(j-midpoint, 0x000000);[m
+[32m+[m[41m     [m
+[32m+[m[32m     strip.setPixelColor(midpoint+NUMPIXELS-j, 0x000000);[m
+[32m+[m[32m  }[m
+[32m+[m[32m  //Serial.println(fadeStep);[m
+[32m+[m[32m  fadeStep = newSection;[m
+[32m+[m[41m  [m
+[32m+[m[32m  if (fadeStep <=midpoint-fadeStepSize){[m
+[32m+[m[32m    fadeStep = 0;[m
+[32m+[m[32m      isAnimating=0;[m
+[32m+[m[32m      bladeState = 0;[m[41m  [m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mvoid detectMotion() {[m
+[32m+[m[32m  float ax, ay, az;[m
+[32m+[m[32m  float gx, gy, gz;[m
+[32m+[m[32m  float mx, my, mz;[m
+[32m+[m[32m  float roll, pitch, heading;[m
+[32m+[m
+[32m+[m[32m  if (imu.available()) {[m
+[32m+[m[32m    // Read the motion sensors[m
+[32m+[m[32m    imu.readMotionSensor(ax, ay, az, gx, gy, gz, mx, my, mz);[m
+[32m+[m
+[32m+[m[32m    // Update the SensorFusion filter[m
+[32m+[m[32m    filter.update(gx, gy, gz, ax, ay, az, mx, my, mz);[m
+[32m+[m
+[32m+[m[32m    // print the heading, pitch and roll[m
+[32m+[m[32m    roll = filter.getRoll();[m
+[32m+[m[32m    pitch = filter.getPitch();[m
+[32m+[m[32m    heading = filter.getYaw();[m
+[32m+[m[41m    [m
+[32m+[m[32m    // does it need a time threshold too?[m
+[32m+[m[41m    [m
+[32m+[m[32m    float headingDiff = abs(lastHeading - heading);[m
+[32m+[m[32m    float pitchDiff = abs(lastPitch - pitch);[m
+[32m+[m[32m    if(lastHeading != 0){[m
+[32m+[m[32m      if(pitchDiff > motionThreshold || headingDiff > motionThreshold){[m[41m      [m
+[32m+[m[32m      //cyle through swing sounds[m
+[32m+[m[32m      lastSwingSound++;[m
+[32m+[m[32m      if(lastSwingSound>swingSounds){[m
+[32m+[m[32m        lastSwingSound=1;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      String swingFile = "saberswingX.raw";[m
+[32m+[m[32m      swingFile.replace("X",lastSwingSound);[m
+[32m+[m[32m      char charBuf[50];[m
+[32m+[m[32m      swingFile.toCharArray(charBuf, 50);[m[41m [m
+[32m+[m[32m      triggerSwing(charBuf);  // needs sequence to iterate through[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    lastHeading = heading;[m
+[32m+[m[32m    lastPitch = pitch;[m
+   }[m
+ [m
+[31m-  Serial.println("Finished init");[m
+ }[m
+[32m+[m[32mvoid loop(){[m
+[32m+[m[32m  // Add entropy to random number generator; we use a lot of it.[m
+[32m+[m[32m // random16_add_entropy( random() );[m
+[32m+[m[41m  [m
+[32m+[m[32m  //handle color selector button[m
+[32m+[m[32m  int BCreading = digitalRead(COLOR_BUTTON_PIN);[m
+[32m+[m[41m   [m
+[32m+[m[32m  if (BCreading != BClastButtonState) {[m
+[32m+[m[32m    // reset the debouncing timer[m
+[32m+[m[32m    BClastDebounceTime = millis();[m
+[32m+[m[32m  }[m
+ [m
+[31m-void playFile( const char* filename ) {[m
+[32m+[m[32m  if ((millis() - BClastDebounceTime) > BCdebounceDelay) {[m
+[32m+[m[32m    if (BCreading != BCbuttonState) {[m
+[32m+[m[32m      BCbuttonState = BCreading;[m
+[32m+[m[41m      [m
+[32m+[m[32m      if(BCbuttonState == HIGH){[m
+[32m+[m[32m        nextColor();[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  BClastButtonState = BCreading;[m
+[32m+[m[41m  [m
+[32m+[m[32m  selectedColor = presetColors[selectedColorIndex];[m
+[32m+[m[32m  if(selectedColor != lastSelectedColor && bladeState != 0){[m
+[32m+[m[32m    Serial.print("COLOR CHANGE");[m
+[32m+[m[32m    Serial.println(selectedColorIndex);[m
+[32m+[m[32m    for( int j = 0; j < NUMPIXELS; j++) {[m
+[32m+[m[32m      strip.setPixelColor(j,selectedColor);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  lastSelectedColor = selectedColor;[m
+ [m
+[31m-  Serial.print("Playing file: ");[m
+[31m-  Serial.print(filename);[m
+[32m+[m[32m//handle blade on/off[m
+[32m+[m[41m  [m
+[32m+[m[32m  int reading = digitalRead(POWER_BUTTON_PIN);[m
+[32m+[m[32m  //debounce[m
+[32m+[m[32m  if (reading != lastButtonState) {[m
+[32m+[m[32m    // reset the debouncing timer[m
+[32m+[m[32m    lastDebounceTime = millis();[m
+[32m+[m[32m  }[m
+ [m
+[31m-  // Start playing the file[m
+[32m+[m[32m  if ((millis() - lastDebounceTime) > debounceDelay) {[m
+[32m+[m[32m    if (reading != buttonState) {[m
+[32m+[m[32m      buttonState = reading;[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  lastButtonState = reading;[m
+[32m+[m[41m   [m
+[32m+[m[32m  if( pendingPress == 1 && buttonState != LOW){[m
+[32m+[m[32m    buttonState = HIGH;[m
+[32m+[m[32m      pendingPress = 0;[m
+[32m+[m[32m      Serial.print("execute pending blade press");[m
+[32m+[m[41m     [m
+[32m+[m[32m       if(bladeOn){[m
+[32m+[m[32m        powerDownBlade();[m
+[32m+[m[32m      } else {[m[41m  [m
+[32m+[m[32m        powerUpBlade();[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[41m      [m
+[32m+[m[32mif (buttonState == LOW && !isAnimating) {[m
+[32m+[m[32m  Serial.println("BLADE BUTTON IS PRESSED");[m
+[32m+[m[32m      pendingPress = 1;[m
+[32m+[m[32m    }[m
+[32m+[m[32m  switch(bladeState){[m
+[32m+[m[32m      case 0:[m
+[32m+[m[32m      //blade is off[m
+[32m+[m[32m        break;[m
+[32m+[m[32m      case 1:[m
+[32m+[m[32m        //blade is animating up[m
+[32m+[m[32m        bladeIsAnimatingUp();[m
+[32m+[m[32m        break;[m
+[32m+[m[32m      case 2:[m
+[32m+[m[32m        //blade is on[m
+[32m+[m[32m        bladeIsOn();[m
+[32m+[m[32m        break;[m
+[32m+[m[32m      case 3:[m
+[32m+[m[32m        //blade is animating down[m
+[32m+[m[32m        bladeIsAnimatingDown();[m
+[32m+[m[32m        break;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));[m
+[32m+[m[32m      digitalWrite(LED_PIN, HIGH);  // enable access to LEDs[m
+[32m+[m[32m      strip.show();                     // Refresh strip[m
+[32m+[m[32m      digitalWrite(LED_PIN, LOW);[m
+[32m+[m[32m      SPI.endTransaction();   // allow other libs to use SPI again[m
+[32m+[m
+[32m+[m[32m      delay(10);[m
+[32m+[m[41m  [m
+[32m+[m[32m  if(bladeState == 2){[m
+[32m+[m[32m    detectMotion();[m
+[32m+[m[32m  }[m
+[32m+[m[41m        [m
+[32m+[m[32m}[m
+[32m+[m[32mvoid nextColor(){[m
+[32m+[m[32m    selectedColorIndex++;[m
+[32m+[m[32m    if(selectedColorIndex >= totalPresetColors){[m
+[32m+[m[32m      selectedColorIndex = 0;[m
+[32m+[m[32m    }[m
+[32m+[m[32m }[m
+[32m+[m[32mvoid triggerSound(const char *filename){[m
+   playFlashRaw1.play(filename);[m
+[31m-[m
+[31m-  // A brief delay for the library read info[m
+[31m-  delay(5);[m
+[31m-[m
+[31m-  // Wait for the file to finish playing[m
+[31m-  while ( playFlashRaw1.isPlaying() );[m
+[31m-[m
+[31m-  pinMode(AMP_ENABLE, 0);[m
+[31m-[m
+ }[m
+[31m-[m
+[31m-[m
+[31m-[m
+[31m-void loop() {[m
+[31m-  digitalWrite(AMP_ENABLE, HIGH);[m
+[31m-  //playFile("lightsaber_01.wav");[m
+[31m-[m
+[31m-  playFile("lightsaber_03.wav");[m
+[31m-  //playFile("lightsaber_04.wav");[m
+[31m-  Serial.println("playing...");[m
+[31m-    delay(5000);[m
+[31m-[m
+[32m+[m[32mvoid triggerSwing(const char *filename){[m
+[32m+[m[32m  if(playSwingRaw.isPlaying()==0){[m
+[32m+[m[32m    playSwingRaw.play(filename);[m
+[32m+[m[32m  } else {[m
+[32m+[m[32m    Serial.println("already swinging");[m
+[32m+[m[32m    }[m
+ }[m
+[31m-[m
+[32m+[m[32mvoid startHum(){[m
+[32m+[m[32m  //Serial.println("startHum");[m
+[32m+[m[32m  playHUMraw.play("HUM2.RAW");[m
+[32m+[m[32m  Serial.println(playHUMraw.isPlaying());[m
+[32m+[m[32m  }[m
+[32m+[m[32mvoid stopHum(){[m
+[32m+[m[32m  playHUMraw.stop();[m
+[32m+[m[32m  }[m
+warning: LF will be replaced by CRLF in teensy_sketch/light_saber_audio/light_saber_audio.ino.
+The file will have its original line endings in your working directory.
